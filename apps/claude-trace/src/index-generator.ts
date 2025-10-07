@@ -240,6 +240,10 @@ SUMMARY: [summary]`;
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 
+			// Close stdin immediately since we're passing the prompt as an argument
+			// Without this, Claude CLI hangs waiting for stdin input
+			child.stdin?.end();
+
 			let stdout = "";
 			let stderr = "";
 
