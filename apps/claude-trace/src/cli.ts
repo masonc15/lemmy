@@ -249,12 +249,12 @@ async function runClaudeWithInterception(
 	log("Starting traffic logger...", "green");
 	console.log("");
 
-	// Launch node with interceptor and absolute path to claude, plus any additional arguments
-	const spawnArgs = ["--require", loaderPath, claudePath, ...claudeArgs];
-	const child: ChildProcess = spawn("node", spawnArgs, {
+	// Launch Claude binary directly with interceptor injected via NODE_OPTIONS
+	// Claude 2.0+ is a compiled binary, not a Node.js script, so we can't use node --require
+	const child: ChildProcess = spawn(claudePath, claudeArgs, {
 		env: {
 			...process.env,
-			NODE_OPTIONS: "--no-deprecation",
+			NODE_OPTIONS: `--no-deprecation --require ${loaderPath}`,
 			CLAUDE_TRACE_INCLUDE_ALL_REQUESTS: includeAllRequests ? "true" : "false",
 			CLAUDE_TRACE_OPEN_BROWSER: openInBrowser ? "true" : "false",
 			...(logBaseName ? { CLAUDE_TRACE_LOG_NAME: logBaseName } : {}),
@@ -334,11 +334,13 @@ async function extractToken(customClaudePath?: string): Promise<void> {
 		}
 	};
 
-	// Launch node with token interceptor and absolute path to claude
+	// Launch Claude binary directly with token interceptor injected via NODE_OPTIONS
+	// Claude 2.0+ is a compiled binary, not a Node.js script
 	const { ANTHROPIC_API_KEY, ...envWithoutApiKey } = process.env;
-	const child: ChildProcess = spawn("node", ["--require", tokenExtractorPath, claudePath, "-p", "hello"], {
+	const child: ChildProcess = spawn(claudePath, ["-p", "hello"], {
 		env: {
 			...envWithoutApiKey,
+			NODE_OPTIONS: `--require ${tokenExtractorPath}`,
 			NODE_TLS_REJECT_UNAUTHORIZED: "0",
 			CLAUDE_TRACE_TOKEN_FILE: tokenFile,
 		},
