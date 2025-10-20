@@ -2,6 +2,34 @@
 import { RawPair } from "./types";
 
 /**
+ * Anthropic API content block types
+ */
+export interface TextContent {
+	type: "text";
+	text: string;
+}
+
+export interface ThinkingContent {
+	type: "thinking";
+	thinking: string;
+}
+
+export interface ToolUseContent {
+	type: "tool_use";
+	id: string;
+	name: string;
+	input: Record<string, unknown>;
+}
+
+export interface ToolResultContent {
+	type: "tool_result";
+	tool_use_id: string;
+	content: string;
+}
+
+export type ContentBlock = TextContent | ThinkingContent | ToolUseContent | ToolResultContent;
+
+/**
  * Claude Code native log entry types
  */
 export interface ClaudeCodeBaseEntry {
@@ -20,7 +48,7 @@ export interface ClaudeCodeUserEntry extends ClaudeCodeBaseEntry {
 	type: "user";
 	message: {
 		role: "user";
-		content: string | unknown[];
+		content: string | ContentBlock[];
 	};
 }
 
@@ -31,7 +59,7 @@ export interface ClaudeCodeAssistantEntry extends ClaudeCodeBaseEntry {
 		id: string;
 		type: "message";
 		role: "assistant";
-		content: unknown[];
+		content: ContentBlock[];
 		stop_reason: string | null;
 		stop_sequence: string | null;
 		usage: {
@@ -76,6 +104,11 @@ export class ClaudeCodeLogConverter {
 	 * Convert Claude Code JSONL log to claude-trace RawPair format
 	 */
 	public convertToRawPairs(jsonlContent: string): RawPair[] {
+		// Reset state to prevent data leaking between calls
+		this.entries = [];
+		this.userEntries = [];
+		this.assistantEntries = [];
+
 		this.parseEntries(jsonlContent);
 		this.filterRelevantEntries();
 		return this.buildRawPairs();
@@ -112,6 +145,14 @@ export class ClaudeCodeLogConverter {
 	private buildRawPairs(): RawPair[] {
 		const pairs: RawPair[] = [];
 
+		// Build a map of all entries by uuid for O(1) lookup
+		const entryByUuid = new Map<string, ClaudeCodeLogEntry>();
+		for (const entry of this.entries) {
+			if ("uuid" in entry) {
+				entryByUuid.set(entry.uuid, entry);
+			}
+		}
+
 		// Build a map of assistant responses by their parentUuid
 		const assistantByParent = new Map<string, ClaudeCodeAssistantEntry>();
 		for (const assistant of this.assistantEntries) {
@@ -125,7 +166,7 @@ export class ClaudeCodeLogConverter {
 			const assistant = assistantByParent.get(user.uuid);
 
 			if (assistant) {
-				const pair = this.createRawPair(user, assistant);
+				const pair = this.createRawPair(user, assistant, entryByUuid);
 				pairs.push(pair);
 			} else {
 				// Orphaned user message (no response yet)
@@ -138,14 +179,17 @@ export class ClaudeCodeLogConverter {
 		return pairs.sort((a, b) => a.request.timestamp - b.request.timestamp);
 	}
 
-	private buildConversationHistory(user: ClaudeCodeUserEntry): unknown[] {
-		const messages: unknown[] = [];
+	private buildConversationHistory(
+		user: ClaudeCodeUserEntry,
+		entryByUuid: Map<string, ClaudeCodeLogEntry>,
+	): Array<{ role: "user" | "assistant"; content: string | ContentBlock[] }> {
+		const messages: Array<{ role: "user" | "assistant"; content: string | ContentBlock[] }> = [];
 		let current: ClaudeCodeLogEntry | undefined = user;
 
 		// Walk backwards through parentUuid chain to build context
 		while (current && "parentUuid" in current && current.parentUuid) {
 			const parentUuid: string = current.parentUuid;
-			const parent: ClaudeCodeLogEntry | undefined = this.entries.find((e) => "uuid" in e && e.uuid === parentUuid);
+			const parent: ClaudeCodeLogEntry | undefined = entryByUuid.get(parentUuid);
 
 			if (!parent) break;
 
@@ -153,7 +197,7 @@ export class ClaudeCodeLogConverter {
 				// Prepend to messages array (we're walking backwards)
 				messages.unshift({
 					role: parent.type === "user" ? "user" : "assistant",
-					content: parent.message.content || parent.message.role,
+					content: parent.message.content,
 				});
 			}
 
@@ -169,10 +213,12 @@ export class ClaudeCodeLogConverter {
 		return messages;
 	}
 
-	private extractSystemPrompt(messages: unknown[]): string | undefined {
+	private extractSystemPrompt(
+		messages: Array<{ role: "user" | "assistant"; content: string | ContentBlock[] }>,
+	): string | undefined {
 		// Look for session-start-hook or other system content in first message
 		if (messages.length > 0) {
-			const firstMessage = messages[0] as { role: string; content: string | unknown[] };
+			const firstMessage = messages[0];
 			if (firstMessage.role === "user") {
 				const content = firstMessage.content;
 
@@ -189,8 +235,12 @@ export class ClaudeCodeLogConverter {
 		return undefined;
 	}
 
-	private createRawPair(user: ClaudeCodeUserEntry, assistant: ClaudeCodeAssistantEntry): RawPair {
-		const messages = this.buildConversationHistory(user);
+	private createRawPair(
+		user: ClaudeCodeUserEntry,
+		assistant: ClaudeCodeAssistantEntry,
+		entryByUuid: Map<string, ClaudeCodeLogEntry>,
+	): RawPair {
+		const messages = this.buildConversationHistory(user, entryByUuid);
 		const system = this.extractSystemPrompt(messages);
 
 		// Reconstruct API request format from user entry
