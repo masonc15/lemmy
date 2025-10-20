@@ -116,3 +116,6 @@ apps/port-cpp/porting-plan.json
 # Add test log files to gitignore
 log-*.html
 log-*.jsonl
+
+# Universal search workspace (separate project)
+apps/claude-trace-universal-search/
