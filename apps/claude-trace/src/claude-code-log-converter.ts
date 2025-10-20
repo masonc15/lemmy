@@ -185,10 +185,19 @@ export class ClaudeCodeLogConverter {
 	): Array<{ role: "user" | "assistant"; content: string | ContentBlock[] }> {
 		const messages: Array<{ role: "user" | "assistant"; content: string | ContentBlock[] }> = [];
 		let current: ClaudeCodeLogEntry | undefined = user;
+		const visited = new Set<string>();
 
 		// Walk backwards through parentUuid chain to build context
 		while (current && "parentUuid" in current && current.parentUuid) {
 			const parentUuid: string = current.parentUuid;
+
+			// Detect cycles to prevent infinite loops
+			if (visited.has(parentUuid)) {
+				console.warn(`Cycle detected in parentUuid chain at ${parentUuid}`);
+				break;
+			}
+			visited.add(parentUuid);
+
 			const parent: ClaudeCodeLogEntry | undefined = entryByUuid.get(parentUuid);
 
 			if (!parent) break;
