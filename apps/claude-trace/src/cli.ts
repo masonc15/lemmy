@@ -468,14 +468,14 @@ async function generateHTMLFromCLI(
 				spawn("open", [finalOutputFile], { detached: true, stdio: "ignore" }).unref();
 				log(`Opening ${finalOutputFile} in browser`, "green");
 			}
-
-			process.exit(0);
 		} finally {
 			// Clean up temp file even if generation fails
 			if (fromClaudeCode && finalInputFile !== inputFile && fs.existsSync(finalInputFile)) {
 				fs.unlinkSync(finalInputFile);
 			}
 		}
+
+		process.exit(0);
 	} catch (error) {
 		const err = error as Error;
 		log(`Error: ${err.message}`, "red");
