@@ -432,35 +432,50 @@ async function generateHTMLFromCLI(
 			const { ClaudeCodeLogConverter } = await import("./claude-code-log-converter");
 			const converter = new ClaudeCodeLogConverter();
 
-			// Read Claude Code JSONL
-			const claudeCodeContent = fs.readFileSync(inputFile, "utf-8");
+			try {
+				const claudeCodeContent = fs.readFileSync(inputFile, "utf-8");
+				const rawPairs = converter.convertToRawPairs(claudeCodeContent);
 
-			// Convert to RawPair format
-			const rawPairs = converter.convertToRawPairs(claudeCodeContent);
+				if (rawPairs.length === 0) {
+					throw new Error(
+						"No valid message pairs found in Claude Code log. The log may be empty or contain only system entries.",
+					);
+				}
 
-			// Write to temporary claude-trace format file
-			const tempFile = inputFile.replace(".jsonl", ".claude-trace-temp.jsonl");
-			const jsonlContent = rawPairs.map((pair) => JSON.stringify(pair)).join("\n");
-			fs.writeFileSync(tempFile, jsonlContent);
+				const tempFile = inputFile.replace(".jsonl", ".claude-trace-temp.jsonl");
+				const jsonlContent = rawPairs.map((pair) => JSON.stringify(pair)).join("\n");
+				fs.writeFileSync(tempFile, jsonlContent);
 
-			finalInputFile = tempFile;
-			log(`Converted ${rawPairs.length} message pairs`, "green");
+				finalInputFile = tempFile;
+				log(`Converted ${rawPairs.length} message pairs`, "green");
+			} catch (error) {
+				if (error instanceof Error) {
+					throw new Error(`Failed to convert Claude Code log: ${error.message}`);
+				}
+				throw error;
+			}
 		}
 
-		const htmlGenerator = new HTMLGenerator();
-		const finalOutputFile = await htmlGenerator.generateHTMLFromJSONL(finalInputFile, outputFile, includeAllRequests);
+		try {
+			const htmlGenerator = new HTMLGenerator();
+			const finalOutputFile = await htmlGenerator.generateHTMLFromJSONL(
+				finalInputFile,
+				outputFile,
+				includeAllRequests,
+			);
 
-		// Clean up temp file
-		if (fromClaudeCode && finalInputFile !== inputFile) {
-			fs.unlinkSync(finalInputFile);
+			if (openInBrowser) {
+				spawn("open", [finalOutputFile], { detached: true, stdio: "ignore" }).unref();
+				log(`Opening ${finalOutputFile} in browser`, "green");
+			}
+
+			process.exit(0);
+		} finally {
+			// Clean up temp file even if generation fails
+			if (fromClaudeCode && finalInputFile !== inputFile && fs.existsSync(finalInputFile)) {
+				fs.unlinkSync(finalInputFile);
+			}
 		}
-
-		if (openInBrowser) {
-			spawn("open", [finalOutputFile], { detached: true, stdio: "ignore" }).unref();
-			log(`Opening ${finalOutputFile} in browser`, "green");
-		}
-
-		process.exit(0);
 	} catch (error) {
 		const err = error as Error;
 		log(`Error: ${err.message}`, "red");
