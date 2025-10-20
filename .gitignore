@@ -113,3 +113,6 @@ apps/port-cpp/porting-plan.json
 /todos/worktrees/
 
 /todos/worktrees/
+# Add test log files to gitignore
+log-*.html
+log-*.jsonl
