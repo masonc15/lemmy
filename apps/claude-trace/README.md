@@ -38,6 +38,18 @@ claude-trace --index
 
 Logs are saved to `.claude-trace/log-YYYY-MM-DD-HH-MM-SS.{jsonl,html}` in your current directory. The HTML file is self-contained and opens in any browser without needing a server.
 
+## Viewing Claude Code Sessions
+
+claude-trace can now display native Claude Code session logs from `~/.claude/projects/`:
+
+```bash
+# By session ID
+./scripts/view-claude-session.sh 39a75743-1e72-40bb-abdc-fa2fedd36389
+
+# By full path
+claude-trace --from-claude-code --generate-html ~/.claude/projects/SESSION.jsonl
+```
+
 ## Request Filtering
 
 By default, claude-trace filters logs to focus on substantial conversations:
