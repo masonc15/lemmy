@@ -31,6 +31,7 @@ ${colors.yellow}USAGE:${colors.reset}
 ${colors.yellow}OPTIONS:${colors.reset}
   --extract-token    Extract OAuth token and exit (reproduces claude-token.py)
   --generate-html    Generate HTML report from JSONL file
+  --from-claude-code     Convert Claude Code native log to HTML
   --index           Generate conversation summaries and index for .claude-trace/ directory
   --run-with         Pass all following arguments to Claude process
   --include-all-requests Include all requests made through fetch, otherwise only requests to v1/messages with more than 2 messages in the context
@@ -54,6 +55,9 @@ ${colors.yellow}MODES:${colors.reset}
     claude-trace --generate-html file.jsonl out.html Generate HTML with custom output name
     claude-trace --generate-html file.jsonl          Generate HTML and open in browser (default)
     claude-trace --generate-html file.jsonl --no-open Generate HTML without opening browser
+
+  ${colors.green}Claude Code conversion:${colors.reset}
+    claude-trace --from-claude-code --generate-html ~/.claude/projects/SESSION_ID.jsonl
 
   ${colors.green}Indexing:${colors.reset}
     claude-trace --index                             Generate conversation summaries and index
@@ -85,6 +89,9 @@ ${colors.yellow}EXAMPLES:${colors.reset}
 
   # Generate HTML report without opening browser
   claude-trace --generate-html logs/traffic.jsonl --no-open
+
+  # Generate HTML from Claude Code session log
+  claude-trace --from-claude-code --generate-html ~/.claude/projects/SESSION_ID.jsonl
 
   # Generate conversation index
   claude-trace --index
@@ -249,12 +256,12 @@ async function runClaudeWithInterception(
 	log("Starting traffic logger...", "green");
 	console.log("");
 
-	// Launch node with interceptor and absolute path to claude, plus any additional arguments
-	const spawnArgs = ["--require", loaderPath, claudePath, ...claudeArgs];
-	const child: ChildProcess = spawn("node", spawnArgs, {
+	// Launch Claude binary directly with interceptor injected via NODE_OPTIONS
+	// Claude 2.0+ is a compiled binary, not a Node.js script, so we can't use node --require
+	const child: ChildProcess = spawn(claudePath, claudeArgs, {
 		env: {
 			...process.env,
-			NODE_OPTIONS: "--no-deprecation",
+			NODE_OPTIONS: `--no-deprecation --require ${loaderPath}`,
 			CLAUDE_TRACE_INCLUDE_ALL_REQUESTS: includeAllRequests ? "true" : "false",
 			CLAUDE_TRACE_OPEN_BROWSER: openInBrowser ? "true" : "false",
 			...(logBaseName ? { CLAUDE_TRACE_LOG_NAME: logBaseName } : {}),
@@ -334,11 +341,13 @@ async function extractToken(customClaudePath?: string): Promise<void> {
 		}
 	};
 
-	// Launch node with token interceptor and absolute path to claude
+	// Launch Claude binary directly with token interceptor injected via NODE_OPTIONS
+	// Claude 2.0+ is a compiled binary, not a Node.js script
 	const { ANTHROPIC_API_KEY, ...envWithoutApiKey } = process.env;
-	const child: ChildProcess = spawn("node", ["--require", tokenExtractorPath, claudePath, "-p", "hello"], {
+	const child: ChildProcess = spawn(claudePath, ["-p", "hello"], {
 		env: {
 			...envWithoutApiKey,
+			NODE_OPTIONS: `--require ${tokenExtractorPath}`,
 			NODE_TLS_REJECT_UNAUTHORIZED: "0",
 			CLAUDE_TRACE_TOKEN_FILE: tokenFile,
 		},
@@ -412,14 +421,58 @@ async function generateHTMLFromCLI(
 	outputFile?: string,
 	includeAllRequests: boolean = false,
 	openInBrowser: boolean = false,
+	fromClaudeCode: boolean = false,
 ): Promise<void> {
 	try {
-		const htmlGenerator = new HTMLGenerator();
-		const finalOutputFile = await htmlGenerator.generateHTMLFromJSONL(inputFile, outputFile, includeAllRequests);
+		let finalInputFile = inputFile;
 
-		if (openInBrowser) {
-			spawn("open", [finalOutputFile], { detached: true, stdio: "ignore" }).unref();
-			log(`Opening ${finalOutputFile} in browser`, "green");
+		// NEW: Convert Claude Code log to claude-trace format if needed
+		if (fromClaudeCode) {
+			log(`Converting Claude Code log format...`, "blue");
+			const { ClaudeCodeLogConverter } = await import("./claude-code-log-converter");
+			const converter = new ClaudeCodeLogConverter();
+
+			try {
+				const claudeCodeContent = fs.readFileSync(inputFile, "utf-8");
+				const rawPairs = converter.convertToRawPairs(claudeCodeContent);
+
+				if (rawPairs.length === 0) {
+					throw new Error(
+						"No valid message pairs found in Claude Code log. The log may be empty or contain only system entries.",
+					);
+				}
+
+				const tempFile = inputFile.replace(".jsonl", ".claude-trace-temp.jsonl");
+				const jsonlContent = rawPairs.map((pair) => JSON.stringify(pair)).join("\n");
+				fs.writeFileSync(tempFile, jsonlContent);
+
+				finalInputFile = tempFile;
+				log(`Converted ${rawPairs.length} message pairs`, "green");
+			} catch (error) {
+				if (error instanceof Error) {
+					throw new Error(`Failed to convert Claude Code log: ${error.message}`);
+				}
+				throw error;
+			}
+		}
+
+		try {
+			const htmlGenerator = new HTMLGenerator();
+			const finalOutputFile = await htmlGenerator.generateHTMLFromJSONL(
+				finalInputFile,
+				outputFile,
+				includeAllRequests,
+			);
+
+			if (openInBrowser) {
+				spawn("open", [finalOutputFile], { detached: true, stdio: "ignore" }).unref();
+				log(`Opening ${finalOutputFile} in browser`, "green");
+			}
+		} finally {
+			// Clean up temp file even if generation fails
+			if (fromClaudeCode && finalInputFile !== inputFile && fs.existsSync(finalInputFile)) {
+				fs.unlinkSync(finalInputFile);
+			}
 		}
 
 		process.exit(0);
@@ -473,6 +526,9 @@ async function main(): Promise<void> {
 	// Check for no-open flag (inverted logic - open by default)
 	const openInBrowser = !claudeTraceArgs.includes("--no-open");
 
+	// Check for from-claude-code flag
+	const fromClaudeCode = claudeTraceArgs.includes("--from-claude-code");
+
 	// Check for custom Claude path
 	let customClaudePath: string | undefined;
 	const claudePathIndex = claudeTraceArgs.indexOf("--claude-path");
@@ -514,7 +570,7 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
-		await generateHTMLFromCLI(inputFile, outputFile, includeAllRequests, openInBrowser);
+		await generateHTMLFromCLI(inputFile, outputFile, includeAllRequests, openInBrowser, fromClaudeCode);
 		return;
 	}
 
